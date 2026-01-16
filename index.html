@@ -113,105 +113,94 @@
             const fetchRealMarkets = async () => {
                 setIsLoading(true);
                 try {
-                    addLog('🔄 Attempting to fetch live markets...', 'info');
+                    addLog('🔄 Connecting to Polymarket API...', 'info');
                     
-                    // Try multiple CORS proxies and direct API
-                    const proxies = [
-                        'https://api.allorigins.win/raw?url=',
-                        'https://corsproxy.io/?',
-                        '' // Direct (no proxy)
-                    ];
+                    // Use allorigins which is most reliable
+                    const apiUrl = 'https://gamma-api.polymarket.com/markets?limit=100&active=true&closed=false';
+                    const proxyUrl = `https://api.allorigins.win/get?url=${encodeURIComponent(apiUrl)}`;
                     
-                    const apiUrl = 'https://gamma-api.polymarket.com/events?limit=50&closed=false';
+                    const response = await fetch(proxyUrl);
                     
-                    let data = null;
-                    let successProxy = null;
-                    
-                    for (const proxy of proxies) {
-                        try {
-                            const url = proxy ? proxy + encodeURIComponent(apiUrl) : apiUrl;
-                            addLog(`Trying ${proxy ? 'proxy' : 'direct'}...`, 'info');
-                            
-                            const response = await fetch(url, {
-                                method: 'GET',
-                                headers: {
-                                    'Accept': 'application/json'
-                                }
-                            });
-                            
-                            if (response.ok) {
-                                const text = await response.text();
-                                data = JSON.parse(text);
-                                successProxy = proxy || 'direct';
-                                addLog(`✓ Connected via ${successProxy}`, 'success');
-                                break;
-                            }
-                        } catch (e) {
-                            console.log(`Failed with ${proxy || 'direct'}:`, e.message);
-                            continue;
-                        }
+                    if (!response.ok) {
+                        throw new Error(`HTTP ${response.status}`);
                     }
                     
-                    if (!data) {
-                        throw new Error('All connection attempts failed');
+                    const result = await response.json();
+                    
+                    if (!result.contents) {
+                        throw new Error('Invalid proxy response');
                     }
                     
-                    if (!Array.isArray(data)) {
-                        throw new Error('Invalid API response format');
+                    const data = JSON.parse(result.contents);
+                    
+                    if (!Array.isArray(data) || data.length === 0) {
+                        throw new Error('No markets in API response');
                     }
+                    
+                    addLog(`✓ API connected successfully`, 'success');
                     
                     const marketList = [];
                     
-                    // Parse Polymarket events
-                    data.forEach(event => {
-                        if (event.markets && Array.isArray(event.markets)) {
-                            event.markets.forEach(market => {
-                                if (market.closed !== true) {
-                                    const outcomes = [];
+                    // Parse markets from /markets endpoint
+                    data.forEach(market => {
+                        if (market.closed === false && market.active !== false) {
+                            const outcomes = [];
+                            
+                            // Parse outcomes
+                            if (market.outcomes && Array.isArray(market.outcomes)) {
+                                market.outcomes.forEach((outcome, idx) => {
+                                    let price = 0.5;
                                     
-                                    if (market.outcomes && Array.isArray(market.outcomes)) {
-                                        market.outcomes.forEach((outcome, idx) => {
-                                            let price = 0.5;
-                                            
-                                            if (market.outcomePrices && Array.isArray(market.outcomePrices)) {
-                                                price = parseFloat(market.outcomePrices[idx]) || 0.5;
-                                            }
-                                            
-                                            outcomes.push({
-                                                name: outcome,
-                                                price: isNaN(price) ? 0.5 : price
-                                            });
-                                        });
+                                    // Try to get real price from various fields
+                                    if (market.outcomePrices && Array.isArray(market.outcomePrices) && market.outcomePrices[idx]) {
+                                        const priceStr = market.outcomePrices[idx];
+                                        price = parseFloat(priceStr);
+                                    } else if (market.lastPrice) {
+                                        price = parseFloat(market.lastPrice);
                                     }
                                     
-                                    if (outcomes.length === 0) {
-                                        outcomes.push(
-                                            { name: 'Yes', price: 0.5 },
-                                            { name: 'No', price: 0.5 }
-                                        );
+                                    // Ensure price is valid
+                                    if (isNaN(price) || price < 0 || price > 1) {
+                                        price = 0.5;
                                     }
                                     
-                                    marketList.push({
-                                        id: market.condition_id || market.id || `market-${Date.now()}-${Math.random()}`,
-                                        question: market.question || event.title || 'Unknown Market',
-                                        outcomes: outcomes,
-                                        volume: parseFloat(market.volume) || 0,
-                                        liquidity: parseFloat(market.liquidity) || 0,
-                                        endDate: market.end_date_iso ? new Date(market.end_date_iso).getTime() : Date.now() + 86400000,
-                                        timeframe: market.end_date_iso ? determineTimeframe(market.end_date_iso) : 'daily',
-                                        category: event.category || 'General'
+                                    outcomes.push({
+                                        name: outcome,
+                                        price: price
                                     });
-                                }
+                                });
+                            }
+                            
+                            // Ensure we have at least 2 outcomes
+                            if (outcomes.length === 0) {
+                                outcomes.push(
+                                    { name: 'Yes', price: 0.5 },
+                                    { name: 'No', price: 0.5 }
+                                );
+                            } else if (outcomes.length === 1) {
+                                outcomes.push({ name: 'No', price: 0.5 });
+                            }
+                            
+                            marketList.push({
+                                id: market.condition_id || market.id || `market-${Date.now()}`,
+                                question: market.question || market.description || 'Unknown Market',
+                                outcomes: outcomes,
+                                volume: parseFloat(market.volume) || 0,
+                                liquidity: parseFloat(market.liquidity) || 0,
+                                endDate: market.end_date_iso ? new Date(market.end_date_iso).getTime() : Date.now() + 86400000,
+                                timeframe: market.end_date_iso ? determineTimeframe(market.end_date_iso) : 'daily',
+                                category: market.category || market.groupItemTitle || 'General'
                             });
                         }
                     });
                     
                     if (marketList.length === 0) {
-                        throw new Error('No markets found in response');
+                        throw new Error('No active markets found after filtering');
                     }
                     
                     setMarkets(marketList);
-                    addLog(`✅ SUCCESS: Loaded ${marketList.length} live markets!`, 'success');
+                    addLog(`✅ Loaded ${marketList.length} live Polymarket markets`, 'success');
+                    addLog(`📊 Ready to scan for opportunities`, 'info');
                     return marketList;
                     
                 } catch (error) {
