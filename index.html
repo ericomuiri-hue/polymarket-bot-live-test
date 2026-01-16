@@ -115,7 +115,7 @@
                 try {
                     addLog('🔄 Connecting to Polymarket API...', 'info');
                     
-                    // Use allorigins which is most reliable
+                    // Fetch markets with real data
                     const apiUrl = 'https://gamma-api.polymarket.com/markets?limit=100&active=true&closed=false';
                     const proxyUrl = `https://api.allorigins.win/get?url=${encodeURIComponent(apiUrl)}`;
                     
@@ -137,29 +137,36 @@
                         throw new Error('No markets in API response');
                     }
                     
-                    addLog(`✓ API connected successfully`, 'success');
+                    addLog(`✓ API connected - fetching live prices...`, 'success');
                     
                     const marketList = [];
                     
-                    // Parse markets from /markets endpoint
-                    data.forEach(market => {
+                    // Parse markets and get REAL prices
+                    for (const market of data) {
                         if (market.closed === false && market.active !== false) {
                             const outcomes = [];
                             
-                            // Parse outcomes
+                            // Get REAL live prices from the market data
                             if (market.outcomes && Array.isArray(market.outcomes)) {
-                                market.outcomes.forEach((outcome, idx) => {
-                                    let price = 0.5;
+                                for (let idx = 0; idx < market.outcomes.length; idx++) {
+                                    const outcome = market.outcomes[idx];
+                                    let price = 0.5; // Default fallback
                                     
-                                    // Try to get real price from various fields
-                                    if (market.outcomePrices && Array.isArray(market.outcomePrices) && market.outcomePrices[idx]) {
+                                    // Try multiple price fields (Polymarket API structure)
+                                    if (market.outcomePrices && market.outcomePrices.length > idx) {
                                         const priceStr = market.outcomePrices[idx];
                                         price = parseFloat(priceStr);
-                                    } else if (market.lastPrice) {
-                                        price = parseFloat(market.lastPrice);
+                                    } else if (market.clobTokenIds && market.clobTokenIds.length > idx) {
+                                        // Try to fetch from last trade price or best bid/ask
+                                        if (market.lastTradePrice) {
+                                            price = parseFloat(market.lastTradePrice);
+                                        } else if (market.bestBid && market.bestAsk) {
+                                            // Use midpoint of bid/ask spread
+                                            price = (parseFloat(market.bestBid) + parseFloat(market.bestAsk)) / 2;
+                                        }
                                     }
                                     
-                                    // Ensure price is valid
+                                    // Validate price is reasonable
                                     if (isNaN(price) || price < 0 || price > 1) {
                                         price = 0.5;
                                     }
@@ -168,7 +175,7 @@
                                         name: outcome,
                                         price: price
                                     });
-                                });
+                                }
                             }
                             
                             // Ensure we have at least 2 outcomes
@@ -178,7 +185,7 @@
                                     { name: 'No', price: 0.5 }
                                 );
                             } else if (outcomes.length === 1) {
-                                outcomes.push({ name: 'No', price: 0.5 });
+                                outcomes.push({ name: 'No', price: 1 - outcomes[0].price });
                             }
                             
                             marketList.push({
@@ -189,18 +196,23 @@
                                 liquidity: parseFloat(market.liquidity) || 0,
                                 endDate: market.end_date_iso ? new Date(market.end_date_iso).getTime() : Date.now() + 86400000,
                                 timeframe: market.end_date_iso ? determineTimeframe(market.end_date_iso) : 'daily',
-                                category: market.category || market.groupItemTitle || 'General'
+                                category: market.category || market.groupItemTitle || 'General',
+                                // Store token IDs for potential future price updates
+                                tokenIds: market.clobTokenIds || []
                             });
                         }
-                    });
+                        
+                        // Limit to prevent too many markets
+                        if (marketList.length >= 50) break;
+                    }
                     
                     if (marketList.length === 0) {
                         throw new Error('No active markets found after filtering');
                     }
                     
                     setMarkets(marketList);
-                    addLog(`✅ Loaded ${marketList.length} live Polymarket markets`, 'success');
-                    addLog(`📊 Ready to scan for opportunities`, 'info');
+                    addLog(`✅ Loaded ${marketList.length} live markets with REAL prices`, 'success');
+                    addLog(`💰 Trading with simulated money on real data`, 'info');
                     return marketList;
                     
                 } catch (error) {
@@ -222,42 +234,336 @@
                 const day = 24 * hour;
                 
                 const demoMarkets = [
+                    // HOURLY MARKETS (Ultra short-term)
                     {
-                        id: 'demo-1',
-                        question: 'Will Bitcoin reach $100k by end of 2026?',
-                        outcomes: [{ name: 'Yes', price: 0.65 }, { name: 'No', price: 0.35 }],
-                        endDate: now + 365 * day,
-                        timeframe: 'yearly',
+                        id: 'demo-h1',
+                        question: 'Will BTC price increase in the next hour?',
+                        outcomes: [{ name: 'Yes', price: 0.49 }, { name: 'No', price: 0.52 }],
+                        volume: 45000,
+                        endDate: now + 55 * 60 * 1000,
+                        timeframe: 'hourly',
                         category: 'Crypto'
                     },
                     {
-                        id: 'demo-2',
-                        question: 'Will S&P 500 close above 6000 by January 2026?',
-                        outcomes: [{ name: 'Yes', price: 0.58 }, { name: 'No', price: 0.42 }],
-                        endDate: now + 15 * day,
-                        timeframe: 'monthly',
+                        id: 'demo-h2',
+                        question: 'Will ETH/BTC ratio go up in next 2 hours?',
+                        outcomes: [{ name: 'Yes', price: 0.47 }, { name: 'No', price: 0.54 }],
+                        volume: 38000,
+                        endDate: now + 2 * hour,
+                        timeframe: 'hourly',
+                        category: 'Crypto'
+                    },
+                    {
+                        id: 'demo-h3',
+                        question: 'Will SPY go green in next hour?',
+                        outcomes: [{ name: 'Yes', price: 0.51 }, { name: 'No', price: 0.50 }],
+                        volume: 62000,
+                        endDate: now + hour,
+                        timeframe: 'hourly',
+                        category: 'Finance'
+                    },
+                    
+                    // DAILY MARKETS
+                    {
+                        id: 'demo-d1',
+                        question: 'Will Bitcoin go up today?',
+                        outcomes: [{ name: 'Yes', price: 0.51 }, { name: 'No', price: 0.50 }],
+                        volume: 150000,
+                        endDate: now + 18 * hour,
+                        timeframe: 'daily',
+                        category: 'Crypto'
+                    },
+                    {
+                        id: 'demo-d2',
+                        question: 'Will Ethereum outperform Bitcoin today?',
+                        outcomes: [{ name: 'Yes', price: 0.46 }, { name: 'No', price: 0.55 }],
+                        volume: 95000,
+                        endDate: now + 20 * hour,
+                        timeframe: 'daily',
+                        category: 'Crypto'
+                    },
+                    {
+                        id: 'demo-d3',
+                        question: 'Will tech stocks rally today?',
+                        outcomes: [{ name: 'Yes', price: 0.54 }, { name: 'No', price: 0.47 }],
+                        volume: 110000,
+                        endDate: now + 16 * hour,
+                        timeframe: 'daily',
                         category: 'Finance'
                     },
                     {
-                        id: 'demo-3',
+                        id: 'demo-d4',
+                        question: 'Will NVDA hit new ATH today?',
+                        outcomes: [{ name: 'Yes', price: 0.28 }, { name: 'No', price: 0.73 }],
+                        volume: 180000,
+                        endDate: now + 14 * hour,
+                        timeframe: 'daily',
+                        category: 'Finance'
+                    },
+                    {
+                        id: 'demo-d5',
+                        question: 'Will USD/EUR close higher today?',
+                        outcomes: [{ name: 'Yes', price: 0.52 }, { name: 'No', price: 0.49 }],
+                        volume: 72000,
+                        endDate: now + 22 * hour,
+                        timeframe: 'daily',
+                        category: 'Finance'
+                    },
+                    {
+                        id: 'demo-d6',
+                        question: 'Will gold price increase today?',
+                        outcomes: [{ name: 'Yes', price: 0.48 }, { name: 'No', price: 0.53 }],
+                        volume: 88000,
+                        endDate: now + 19 * hour,
+                        timeframe: 'daily',
+                        category: 'Commodities'
+                    },
+                    
+                    // WEEKLY MARKETS
+                    {
+                        id: 'demo-w1',
                         question: 'Will Bitcoin close above $95k this week?',
-                        outcomes: [{ name: 'Yes', price: 0.48 }, { name: 'No', price: 0.52 }],
+                        outcomes: [{ name: 'Yes', price: 0.48 }, { name: 'No', price: 0.53 }],
+                        volume: 320000,
                         endDate: now + 5 * day,
                         timeframe: 'weekly',
                         category: 'Crypto'
                     },
                     {
-                        id: 'demo-4',
-                        question: 'Will Ethereum outperform Bitcoin today?',
-                        outcomes: [{ name: 'Yes', price: 0.46 }, { name: 'No', price: 0.54 }],
-                        endDate: now + 20 * hour,
-                        timeframe: 'daily',
+                        id: 'demo-w2',
+                        question: 'Will Nvidia stock hit new ATH this week?',
+                        outcomes: [{ name: 'Yes', price: 0.41 }, { name: 'No', price: 0.60 }],
+                        volume: 280000,
+                        endDate: now + 4 * day,
+                        timeframe: 'weekly',
+                        category: 'Finance'
+                    },
+                    {
+                        id: 'demo-w3',
+                        question: 'Will there be a major AI announcement this week?',
+                        outcomes: [{ name: 'Yes', price: 0.52 }, { name: 'No', price: 0.49 }],
+                        volume: 190000,
+                        endDate: now + 6 * day,
+                        timeframe: 'weekly',
+                        category: 'Technology'
+                    },
+                    {
+                        id: 'demo-w4',
+                        question: 'Will Tesla deliver 500k+ vehicles this quarter?',
+                        outcomes: [{ name: 'Yes', price: 0.67 }, { name: 'No', price: 0.34 }],
+                        volume: 420000,
+                        endDate: now + 5 * day,
+                        timeframe: 'weekly',
+                        category: 'Business'
+                    },
+                    {
+                        id: 'demo-w5',
+                        question: 'Will S&P 500 gain 2%+ this week?',
+                        outcomes: [{ name: 'Yes', price: 0.35 }, { name: 'No', price: 0.66 }],
+                        volume: 510000,
+                        endDate: now + 3 * day,
+                        timeframe: 'weekly',
+                        category: 'Finance'
+                    },
+                    {
+                        id: 'demo-w6',
+                        question: 'Will oil prices exceed $85/barrel this week?',
+                        outcomes: [{ name: 'Yes', price: 0.43 }, { name: 'No', price: 0.58 }],
+                        volume: 145000,
+                        endDate: now + 6 * day,
+                        timeframe: 'weekly',
+                        category: 'Commodities'
+                    },
+                    
+                    // MONTHLY MARKETS
+                    {
+                        id: 'demo-m1',
+                        question: 'Will S&P 500 close above 6000 by end of January 2026?',
+                        outcomes: [{ name: 'Yes', price: 0.58 }, { name: 'No', price: 0.43 }],
+                        volume: 450000,
+                        endDate: now + 15 * day,
+                        timeframe: 'monthly',
+                        category: 'Finance'
+                    },
+                    {
+                        id: 'demo-m2',
+                        question: 'Will Fed cut rates in February 2026?',
+                        outcomes: [{ name: 'Yes', price: 0.37 }, { name: 'No', price: 0.64 }],
+                        volume: 780000,
+                        endDate: now + 45 * day,
+                        timeframe: 'monthly',
+                        category: 'Economics'
+                    },
+                    {
+                        id: 'demo-m3',
+                        question: 'Will inflation rate drop below 2.5% this month?',
+                        outcomes: [{ name: 'Yes', price: 0.44 }, { name: 'No', price: 0.57 }],
+                        volume: 320000,
+                        endDate: now + 28 * day,
+                        timeframe: 'monthly',
+                        category: 'Economics'
+                    },
+                    {
+                        id: 'demo-m4',
+                        question: 'Will Apple announce new product this month?',
+                        outcomes: [{ name: 'Yes', price: 0.29 }, { name: 'No', price: 0.72 }],
+                        volume: 210000,
+                        endDate: now + 25 * day,
+                        timeframe: 'monthly',
+                        category: 'Technology'
+                    },
+                    {
+                        id: 'demo-m5',
+                        question: 'Will unemployment rate stay below 4% this month?',
+                        outcomes: [{ name: 'Yes', price: 0.71 }, { name: 'No', price: 0.30 }],
+                        volume: 280000,
+                        endDate: now + 20 * day,
+                        timeframe: 'monthly',
+                        category: 'Economics'
+                    },
+                    {
+                        id: 'demo-m6',
+                        question: 'Will Bitcoin volatility exceed 50% this month?',
+                        outcomes: [{ name: 'Yes', price: 0.38 }, { name: 'No', price: 0.63 }],
+                        volume: 195000,
+                        endDate: now + 22 * day,
+                        timeframe: 'monthly',
                         category: 'Crypto'
+                    },
+                    
+                    // QUARTERLY MARKETS
+                    {
+                        id: 'demo-q1',
+                        question: 'Will Ethereum ETF trading volume exceed $1B daily by Q2 2026?',
+                        outcomes: [{ name: 'Yes', price: 0.55 }, { name: 'No', price: 0.46 }],
+                        volume: 760000,
+                        endDate: now + 90 * day,
+                        timeframe: 'quarterly',
+                        category: 'Crypto'
+                    },
+                    {
+                        id: 'demo-q2',
+                        question: 'Will US GDP growth exceed 3% in Q1 2026?',
+                        outcomes: [{ name: 'Yes', price: 0.42 }, { name: 'No', price: 0.59 }],
+                        volume: 540000,
+                        endDate: now + 75 * day,
+                        timeframe: 'quarterly',
+                        category: 'Economics'
+                    },
+                    {
+                        id: 'demo-q3',
+                        question: 'Will OpenAI release GPT-5 by Q2 2026?',
+                        outcomes: [{ name: 'Yes', price: 0.33 }, { name: 'No', price: 0.68 }],
+                        volume: 890000,
+                        endDate: now + 120 * day,
+                        timeframe: 'quarterly',
+                        category: 'Technology'
+                    },
+                    {
+                        id: 'demo-q4',
+                        question: 'Will Tesla stock exceed $300 by Q2 2026?',
+                        outcomes: [{ name: 'Yes', price: 0.48 }, { name: 'No', price: 0.53 }],
+                        volume: 670000,
+                        endDate: now + 100 * day,
+                        timeframe: 'quarterly',
+                        category: 'Finance'
+                    },
+                    
+                    // YEARLY MARKETS (Long-term)
+                    {
+                        id: 'demo-y1',
+                        question: 'Will Bitcoin reach $100k by end of 2026?',
+                        outcomes: [{ name: 'Yes', price: 0.65 }, { name: 'No', price: 0.36 }],
+                        volume: 1250000,
+                        endDate: now + 365 * day,
+                        timeframe: 'yearly',
+                        category: 'Crypto'
+                    },
+                    {
+                        id: 'demo-y2',
+                        question: 'Will AI surpass human performance in coding by 2027?',
+                        outcomes: [{ name: 'Yes', price: 0.42 }, { name: 'No', price: 0.59 }],
+                        volume: 890000,
+                        endDate: now + 400 * day,
+                        timeframe: 'yearly',
+                        category: 'Technology'
+                    },
+                    {
+                        id: 'demo-y3',
+                        question: 'Will there be a recession in 2026?',
+                        outcomes: [{ name: 'Yes', price: 0.31 }, { name: 'No', price: 0.70 }],
+                        volume: 2100000,
+                        endDate: now + 350 * day,
+                        timeframe: 'yearly',
+                        category: 'Economics'
+                    },
+                    {
+                        id: 'demo-y4',
+                        question: 'Will SpaceX land humans on Mars before 2030?',
+                        outcomes: [{ name: 'Yes', price: 0.28 }, { name: 'No', price: 0.73 }],
+                        volume: 1450000,
+                        endDate: now + 1400 * day,
+                        timeframe: 'yearly',
+                        category: 'Space'
+                    },
+                    {
+                        id: 'demo-y5',
+                        question: 'Will quantum computer break RSA-2048 by 2028?',
+                        outcomes: [{ name: 'Yes', price: 0.19 }, { name: 'No', price: 0.82 }],
+                        volume: 620000,
+                        endDate: now + 730 * day,
+                        timeframe: 'yearly',
+                        category: 'Technology'
+                    },
+                    {
+                        id: 'demo-y6',
+                        question: 'Will global temperatures exceed 1.5°C warming by end of 2026?',
+                        outcomes: [{ name: 'Yes', price: 0.68 }, { name: 'No', price: 0.33 }],
+                        volume: 980000,
+                        endDate: now + 350 * day,
+                        timeframe: 'yearly',
+                        category: 'Climate'
+                    },
+                    {
+                        id: 'demo-y7',
+                        question: 'Will Apple release AR headset under $1000 in 2026?',
+                        outcomes: [{ name: 'Yes', price: 0.44 }, { name: 'No', price: 0.57 }],
+                        volume: 1120000,
+                        endDate: now + 200 * day,
+                        timeframe: 'yearly',
+                        category: 'Technology'
+                    },
+                    {
+                        id: 'demo-y8',
+                        question: 'Will US have presidential election controversy in 2026?',
+                        outcomes: [{ name: 'Yes', price: 0.37 }, { name: 'No', price: 0.64 }],
+                        volume: 1850000,
+                        endDate: now + 320 * day,
+                        timeframe: 'yearly',
+                        category: 'Politics'
+                    },
+                    {
+                        id: 'demo-y9',
+                        question: 'Will Meta release consumer VR headset under $300 in 2026?',
+                        outcomes: [{ name: 'Yes', price: 0.51 }, { name: 'No', price: 0.50 }],
+                        volume: 720000,
+                        endDate: now + 280 * day,
+                        timeframe: 'yearly',
+                        category: 'Technology'
+                    },
+                    {
+                        id: 'demo-y10',
+                        question: 'Will renewable energy exceed 50% of US grid by 2027?',
+                        outcomes: [{ name: 'Yes', price: 0.35 }, { name: 'No', price: 0.66 }],
+                        volume: 580000,
+                        endDate: now + 500 * day,
+                        timeframe: 'yearly',
+                        category: 'Climate'
                     }
                 ];
                 
                 setMarkets(demoMarkets);
-                addLog(`📊 Loaded ${demoMarkets.length} demo markets`, 'info');
+                addLog(`📊 Loaded ${demoMarkets.length} demo markets across all timeframes`, 'info');
             };
 
             useEffect(() => {
